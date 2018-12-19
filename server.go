@@ -24,11 +24,13 @@ type fileStorage struct {
 	Path    string
 }
 
+//FileStorage ...
 var FileStorage = fileStorage{
 	Path:    "./files",
 	TmpPath: ".tmp",
 }
 
+//HTTPHandler ....
 func HTTPHandler(w http.ResponseWriter, r *http.Request) {
 	ensureDir(FileStorage.Path)
 	ensureDir(FileStorage.TmpPath)
@@ -57,10 +59,10 @@ func HTTPHandler(w http.ResponseWriter, r *http.Request) {
 		_, ok := files[sessionID]
 		if !ok {
 			w.WriteHeader(http.StatusCreated)
-			_, params, err := mime.ParseMediaType(r.Header.Get("Content-Disposition"))
-			if err != nil {
+			_, params, errs := mime.ParseMediaType(r.Header.Get("Content-Disposition"))
+			if errs != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(err.Error()))
+				w.Write([]byte(errs.Error()))
 			}
 			fileName := params["filename"]
 
@@ -70,10 +72,10 @@ func HTTPHandler(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusInternalServerError)
 				w.Write([]byte(err.Error()))
 			}
-			f, err := os.OpenFile(newFile, os.O_APPEND|os.O_WRONLY, os.ModeAppend)
-			if err != nil {
+			f, errs := os.OpenFile(newFile, os.O_APPEND|os.O_WRONLY, os.ModeAppend)
+			if errs != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(err.Error()))
+				w.Write([]byte(errs.Error()))
 			}
 			files[sessionID] = uploadFile{
 				file:    f,

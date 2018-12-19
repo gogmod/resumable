@@ -1,174 +1,173 @@
 package resumable
 
 import (
-    "bytes"
-    "fmt"
-    "io/ioutil"
-    "math"
-    "net/http"
-    "os"
-    "path/filepath"
-    "runtime"
-    "sync"
+	"bytes"
+	"fmt"
+	"io/ioutil"
+	"math"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
 )
 
 const (
-    stopped = 0
-    paused  = 1
-    runing  = 2
+	stopped = 0
+	paused  = 1
+	running = 2
 )
 
+//WG ....
 var WG sync.WaitGroup
 
-//UploadStatus
-type UploadStatus struct{
-    Size             int64
-    SizeTransferred  int64
-    Parts            uint64
-    PartsTransferred uint64
+//UploadStatus ....
+type UploadStatus struct {
+	Size             int64
+	SizeTransferred  int64
+	Parts            uint64
+	PartsTransferred uint64
 }
 
 //Resumable structure
-type Resumable struct{
-    client    *http.Client
-    url       string
-    filePath  string
-    id        string
-    chunkSize int
-    file      os.File
-    channel   chan int
-    Status    UploadStatus
-    debug     bool
+type Resumable struct {
+	client    *http.Client
+	url       string
+	filePath  string
+	id        string
+	chunkSize int
+	file      *os.File
+	channel   chan int
+	Status    UploadStatus
+	debug     bool
 }
 
 // New create new instance of resumable client
 func New(url string, filePath string, client *http.Client, chunkSize int, debug bool) *Resumable {
-    resumable := &Resumable{
-        client:     client,
-        url:        url,
-        filePath:   filePath,
-        id:         generateSessionID(),
-        chunkSize:  chunkSize,
-        debug:      debug,
-        Status:     UploadStatus{
-                Size:            0,
-                SizeTransferred: 0,
-                Parts:           0,
-                PartsTransferred:0,
-        },
-    }
-    return resumable
+	resumable := &Resumable{
+		client:    client,
+		url:       url,
+		filePath:  filePath,
+		id:        generateSessionID(),
+		chunkSize: chunkSize,
+		debug:     debug,
+		Status: UploadStatus{
+			Size:             0,
+			SizeTransferred:  0,
+			Parts:            0,
+			PartsTransferred: 0,
+		},
+	}
+	return resumable
 }
 
 //Init method initializes upload
-func (c *Resumable) Init(){
-    fileStat, err := os.Stat(c.filePath)
-    if err != nil {
-        fmt.Println(err)
-        os.Exit(1)
-    }
+func (c *Resumable) Init() {
+	fileStat, err := os.Stat(c.filePath)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 
-    c.Status.Size = fileStat.Size()
-    c.Status.Parts = uint64(math.Ceil(float64(c.Status.Size) / float64(c.chunkSize)))
+	c.Status.Size = fileStat.Size()
+	c.Status.Parts = uint64(math.Ceil(float64(c.Status.Size) / float64(c.chunkSize)))
 
-    c.channel = make(chan int,1)
-    c.file, err = os.Open(c.filePath)
-    if err != nil {
-        fmt.Println(err)
-        os.Exit(1)
-    }
-    defer c.file.Close()
-    WG.Add(1)
+	c.channel = make(chan int, 1)
+	c.file, err = os.Open(c.filePath)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	defer c.file.Close()
+	WG.Add(1)
 
-    go func(){
-        c.upload()
-        c = nil
-        WG.Done()
-    }()
+	go func() {
+		c.upload()
+		c = nil
+		WG.Done()
+	}()
 }
 
-func (c *Resumable) upload(){
-    state := paused
-    i := uint64(0)
-    for {
-        select{
-          case state = <-c.channel:
-            switch state {
-                case stopped:
-                    if c.debug {
-                        fmt.Printf("Upload %s: stopped\n", c.id)
-                    }
-                    return
-                case running:
-                    if c.Status.PartsTransferred > 0 {
-                        i = i - 1
-                    }
-                    if c.debug {
-                        fmt.Printf("Upload %s: running\n", c.id)
-                    }
-                case paused:
-                    if c.debug {
-                        fmt.Printf("Upload %s: paused\n", c.id)
-                    }
-            }
-        default:
-            runtime.Gosched()
-            if state == paused {
-                break
-            }
-            c.uploadChunk(i)
-            i = i + 1
-        }
-    }
+func (c *Resumable) upload() {
+	state := paused
+	i := uint64(0)
+	for {
+		select {
+		case state = <-c.channel:
+			switch state {
+			case stopped:
+				if c.debug {
+					fmt.Printf("Upload %s: stopped\n", c.id)
+				}
+				return
+			case running:
+				if c.Status.PartsTransferred > 0 {
+					i = i - 1
+				}
+				if c.debug {
+					fmt.Printf("Upload %s: running\n", c.id)
+				}
+			case paused:
+				if c.debug {
+					fmt.Printf("Upload %s: paused\n", c.id)
+				}
+			}
+		default:
+			runtime.Gosched()
+			if state == paused {
+				break
+			}
+			c.uploadChunk(i)
+			i = i + 1
+		}
+	}
 }
-
 
 func httpRequest(url string, client *http.Client, sessionID string, totalSize int64, part []byte, contentRange string, fileName string) (string, error) {
-    request, err := http.NewRequest("POST", url, bytes.NewBuffer(part))
-    if err != nil {
-        return "", err
-    }
-    request.Header.Add("Content-Type", "application/octet-stream")
+	request, err := http.NewRequest("POST", url, bytes.NewBuffer(part))
+	if err != nil {
+		return "", err
+	}
+	request.Header.Add("Content-Type", "application/octet-stream")
 	request.Header.Add("Content-Disposition", "attachment; filename=\""+fileName+"\"")
 	request.Header.Add("Content-Range", contentRange)
 	request.Header.Add("Session-ID", sessionID)
-    response, err := client.Do(request)
-    if err != nil {
-        return "", err
-    }
-    defer response.Body.Close()
-    body, err := ioutil.ReadAll(response.Body)
-    if err != nil {
-        return "", err
-    }
-    return string(body), nil
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
 }
 
 func (c *Resumable) uploadChunk(i uint64) {
-    if i == c.Status.Parts {
-        if c.debug {
-            fmt.Printf("Upload %s: done\n", c.id)
-        }
-        WG.Done()
-    }else{
-        filename := filepath.Base(c.filePath)
-        partSize := int(math.Ceil((math.Min(float64(c.chunkSize), float64(c.Status.Size-int64(i*uint64(c.chunkSize)))))))
-        if partSize <= 0 {
-            return
-        }
-        partBuffer := make([]byte, partSize)
-        c.file.Read(partBuffer)
-        contentRange := generateContentRange(i, c.chunkSize, partSize, c.Status.Size)
-        responseBody, err := httpRequest(c.url, c.client, c.id, c.Status.Size, partBuffer, contentRange, fileName)
-        if err != nil {
-            fmt.Println(err)
-            os.Exit(1)
-        }
-        c.Status.SizeTransferred = parseBody(responseBody)
-        c.Status.PartsTransferred = i + 1
-    }
+	if i == c.Status.Parts {
+		if c.debug {
+			fmt.Printf("Upload %s: done\n", c.id)
+		}
+		WG.Done()
+	} else {
+		fileName := filepath.Base(c.filePath)
+		partSize := int(math.Ceil((math.Min(float64(c.chunkSize), float64(c.Status.Size-int64(i*uint64(c.chunkSize)))))))
+		if partSize <= 0 {
+			return
+		}
+		partBuffer := make([]byte, partSize)
+		c.file.Read(partBuffer)
+		contentRange := generateContentRange(i, c.chunkSize, partSize, c.Status.Size)
+		responseBody, err := httpRequest(c.url, c.client, c.id, c.Status.Size, partBuffer, contentRange, fileName)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		c.Status.SizeTransferred = parseBody(responseBody)
+		c.Status.PartsTransferred = i + 1
+	}
 }
-
 
 // Start set upload state to uploading
 func (c *Resumable) Start() {
@@ -184,5 +183,3 @@ func (c *Resumable) Pause() {
 func (c *Resumable) Cancel() {
 	c.channel <- 0
 }
-
-
